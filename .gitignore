@@ -1,0 +1,8 @@
+build/
+dist/
+cft/
+*.exe
+__pycache__/
+.vscode/
+memo.txt
+profile/
