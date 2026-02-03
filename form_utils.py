@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+from datetime import datetime, timedelta
 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -66,9 +67,91 @@ def retry_func(func, *args, max_retries=3, **kwargs):
     if last_exception is not None:
         raise last_exception
 
+
+def normalize_date_for_html(value: str) -> str:
+    """HTML の date 入力用に日付文字列を YYYY-MM-DD 形式へ正規化する。
+
+    - 空文字列: 当日の日付を返す
+    - "月曜"〜"日曜"/"月曜日"〜"日曜日": 当日を含む直近のその曜日の日付
+    - 日付文字列: "%Y%m%d", "%Y/%m/%d", "%Y-%m-%d" を順に試す
+
+    いずれにも当てはまらない場合は log_failure を出しつつ、当日の日付を返す。
+    """
+
+    raw = (value or "").strip()
+    # 空欄は当日
+    if not raw:
+        return datetime.today().strftime("%Y-%m-%d")
+
+    # 「月曜」〜「日曜」指定: 当日を含む直近のその曜日
+    weekday_map = {
+        "月曜": 0,
+        "月曜日": 0,
+        "火曜": 1,
+        "火曜日": 1,
+        "水曜": 2,
+        "水曜日": 2,
+        "木曜": 3,
+        "木曜日": 3,
+        "金曜": 4,
+        "金曜日": 4,
+        "土曜": 5,
+        "土曜日": 5,
+        "日曜": 6,
+        "日曜日": 6,
+    }
+
+    if raw in weekday_map:
+        today = datetime.today()
+        target = weekday_map[raw]
+        delta = (target - today.weekday()) % 7
+        target_date = today + timedelta(days=delta)
+        return target_date.strftime("%Y-%m-%d")
+
+    # それ以外は日付として解釈を試みる
+    for fmt in ("%Y%m%d", "%Y/%m/%d", "%Y-%m-%d"):
+        try:
+            dt = datetime.strptime(raw, fmt)
+            return dt.strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+
+    log_failure(f"日付の形式が不正です: {raw} (YYYYMMDD 形式を推奨)")
+    return datetime.today().strftime("%Y-%m-%d")
+
 # ========================
 # 共通操作関数
 # ========================
+def ensure_reply_email_checkbox_on(driver, wait):
+    """Googleフォームの「返信に表示するメールアドレス」チェックを無条件でONにする。"""
+    try:
+        email_checkbox = wait.until(
+            EC.element_to_be_clickable(
+                (
+                    By.XPATH,
+                    "//div[@role='checkbox' and contains(@aria-label, '返信に表示するメールアドレス')]",
+                )
+            )
+        )
+    except Exception:
+        # チェックボックス自体が見つからない場合はスキップ（ログのみ出力）
+        log_failure("メールアドレスのチェックボックスが見つからなかったためスキップします。")
+        return
+
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", email_checkbox)
+    try:
+        current_state = email_checkbox.get_attribute("aria-checked")
+        if current_state != "true":
+            email_checkbox.click()
+            time.sleep(0.2)
+            log_success("メールアドレスのチェックをONにしました")
+        else:
+            log_success("メールアドレスのチェックは既にONです")
+    except Exception as e:
+        # クリックに失敗してもフォーム入力自体は続行する
+        log_failure(f"メールアドレスのチェックONに失敗しました: {e}")
+
+
 def fill_input_by_label(driver, wait, label_text, value):
     try:
         input_elem = wait.until(EC.presence_of_element_located((

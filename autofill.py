@@ -1,20 +1,17 @@
 import json
 import time
 import sys, os
-from datetime import datetime, timedelta
 from selenium import webdriver
 from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
 from form_utils import (
     log_success, log_failure,
     fill_input_by_label_with_retry, fill_textarea_by_label_with_retry,
     select_option_by_label_with_retry, click_button_by_text_with_retry,
     fill_datetime_by_label_with_retry, check_multiple_checkboxes_by_labels_with_retry,
     wait_for_label_with_retry, wait_for_form_section_change_with_retry, select_radio_by_label_with_retry, get_config_path,
-    retry_func,
+    ensure_reply_email_checkbox_on, normalize_date_for_html,
 )
 from cft_utils import get_cft_paths, terminate_cft_processes
 
@@ -63,9 +60,9 @@ def _run_impl(config, retry_count: int = 0) -> None:
     # ========================
 
     if getattr(sys, 'frozen', False):
-        profile_dir = os.path.dirname(sys.executable) + "\\profile"
+        profile_dir = os.path.join(os.path.dirname(sys.executable), "profile")
     else:
-        profile_dir = os.path.dirname(os.path.abspath(__file__)) + "\\profile"
+        profile_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "profile")
 
     # ========================
     # Chrome for Testing の取得（未取得ならダウンロード）
@@ -97,7 +94,7 @@ def _run_impl(config, retry_count: int = 0) -> None:
     driver = None
     wait = None
 
-    for attempt in range(1, 3 + 1):
+    for attempt in range(1, MAX_LOST_BROWSER_RETRIES + 1):
         # --- WebDriver 起動 ---
         try:
             driver = webdriver.Chrome(service=Service(driver_exe), options=options)
@@ -132,7 +129,7 @@ def _run_impl(config, retry_count: int = 0) -> None:
             # 起動直後にウィンドウが閉じられた / クラッシュした典型ケース
             if "no such window" in message or "web view not found" in message:
                 log_failure(
-                    f"Chrome ウィンドウが起動直後に閉じられました（{attempt}/3 回目）。\n"
+                    f"Chrome ウィンドウが起動直後に閉じられました（{attempt}/{MAX_LOST_BROWSER_RETRIES} 回目）。\n"
                     "セキュリティソフトや OS によるブロック、またはブラウザのクラッシュが考えられます。"
                 )
                 try:
@@ -140,7 +137,7 @@ def _run_impl(config, retry_count: int = 0) -> None:
                 except Exception:
                     pass
 
-                if attempt >= 3:
+                if attempt >= MAX_LOST_BROWSER_RETRIES:
                     log_failure(
                         "Chrome ウィンドウを 3 回再起動しましたが、毎回すぐに閉じられました。\n"
                         "ウイルス対策ソフトの設定や Windows のイベントログを確認し、環境側の問題がないか確認してください。"
@@ -161,81 +158,13 @@ def _run_impl(config, retry_count: int = 0) -> None:
     # ========================
 
     try:
-        email_checkbox = wait.until(
-            EC.element_to_be_clickable(
-                (
-                    By.XPATH,
-                    "//div[@role='checkbox' and contains(@aria-label, '返信に表示するメールアドレス')]",
-                )
-            )
-        )
-        # 画面外にある場合のクリック失敗を防ぐため、中央付近までスクロール
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", email_checkbox)
-
-        if config.get("record_the_email_address_to_reply"):
-            # 可能な限り ON 状態を保証するため、状態を確認しながら必要に応じて複数回クリックする
-            for _ in range(2):
-                current_state = email_checkbox.get_attribute("aria-checked")
-                if current_state == "true":
-                    log_success("メールアドレスのチェックは既にONです")
-                    break
-
-                email_checkbox.click()
-                time.sleep(0.2)
-
-            # 最終的な状態を確認してログを出す
-            final_state = email_checkbox.get_attribute("aria-checked")
-            if final_state == "true":
-                log_success("メールアドレスのチェックをONにしました")
-            else:
-                log_failure("メールアドレスのチェックをONにできませんでした（フォーム仕様変更の可能性があります）")
-    #   else:
-    #       if email_checkbox.get_attribute("aria-checked") == "true":
-    #           email_checkbox.click()
-    #           log_success("メールアドレスのチェックをOFFにしました")
+        # メールアドレスのチェックは無条件で最初にONを試みる
+        ensure_reply_email_checkbox_on(driver, wait)
 
         fill_input_by_label_with_retry(driver, wait, "イベント名", config["event_name"])
         select_radio_by_label_with_retry(
             driver, wait, "Android対応可否", config.get("android_support", "PC/android")
         )
-
-        # 日付文字列は GUI 側で YYYYMMDD を基本フォーマットとして入力するが、
-        # 実際に HTML の date 入力へ送る際は YYYY-MM-DD に正規化する。
-        # 互換性のため、YYYY/MM/DD と YYYY-MM-DD も許容し、
-        # 「月曜」〜「日曜」の文字列は「当日を含む直近のその曜日」として解釈する。
-        def normalize_date_for_html(value: str) -> str:
-            raw = (value or "").strip()
-            # 空欄は当日
-            if not raw:
-                return datetime.today().strftime("%Y-%m-%d")
-
-            # 「月曜」〜「日曜」指定: 当日を含む直近のその曜日
-            weekday_map = {
-                "月曜": 0, "月曜日": 0,
-                "火曜": 1, "火曜日": 1,
-                "水曜": 2, "水曜日": 2,
-                "木曜": 3, "木曜日": 3,
-                "金曜": 4, "金曜日": 4,
-                "土曜": 5, "土曜日": 5,
-                "日曜": 6, "日曜日": 6,
-            }
-
-            if raw in weekday_map:
-                today = datetime.today()
-                target = weekday_map[raw]
-                delta = (target - today.weekday()) % 7
-                target_date = today + timedelta(days=delta)
-                return target_date.strftime("%Y-%m-%d")
-
-            # それ以外は日付として解釈を試みる
-            for fmt in ("%Y%m%d", "%Y/%m/%d", "%Y-%m-%d"):
-                try:
-                    dt = datetime.strptime(raw, fmt)
-                    return dt.strftime("%Y-%m-%d")
-                except ValueError:
-                    continue
-            log_failure(f"日付の形式が不正です: {raw} (YYYYMMDD 形式を推奨)")
-            return datetime.today().strftime("%Y-%m-%d")
 
         # 開始日・終了日のデフォルト
         # - 開始日: 空欄なら当日
@@ -269,7 +198,11 @@ def _run_impl(config, retry_count: int = 0) -> None:
         select_option_by_label_with_retry(driver, wait, "イベントを登録しますか", "イベントを登録する")
 
         previous_section = driver.find_element("xpath", "//div[@role='list']")
-        click_button_by_text_with_retry(driver, wait, "次へ")
+
+        # 念のためもう一度
+        ensure_reply_email_checkbox_on(driver, wait)
+
+        click_button_by_text_with_retry(driver, wait, "次へ", max_retries=1)
         wait_for_form_section_change_with_retry(driver, previous_section)
         wait_for_label_with_retry(driver, "イベント主催者")
 
@@ -344,19 +277,20 @@ def _run_impl(config, retry_count: int = 0) -> None:
         sys.exit(0)
     except Exception as e:
         message = str(e)
+        message_lower = message.lower()
 
         # ブラウザ（Chrome for Testing）との接続が切れたと判断できる代表的なパターンをまとめて扱う
         lost_browser_keywords = [
             "no such window",
             "web view not found",
-            "Connection aborted.",
-            "Max retries exceeded with url",
-            "Failed to establish a new connection",
-            "Connection refused",
-            "ERR_CONNECTION_REFUSED",
+            "connection aborted.",
+            "max retries exceeded with url",
+            "failed to establish a new connection",
+            "connection refused",
+            "err_connection_refused",
         ]
 
-        if any(keyword in message for keyword in lost_browser_keywords):
+        if any(keyword in message_lower for keyword in lost_browser_keywords):
             log_failure(
                 "フォーム入力中にブラウザとの接続が失われました。\n"
                 "Chrome for Testing の対象ウィンドウが OS やブラウザ側の理由で終了し、\n"
