@@ -4,9 +4,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
-from PySide6.QtCore import Qt, Signal, QTimer
-from PySide6.QtGui import QFont, QIcon, QPixmap
+from PySide6.QtCore import Qt, Signal, QTimer, QMimeData
+from PySide6.QtGui import QFont, QIcon, QPixmap, QPalette, QColor
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDateEdit,
@@ -30,6 +31,38 @@ from PySide6.QtWidgets import (
 
 import os
 import sys
+
+
+class PlainCopyTextEdit(QTextEdit):
+    """コピー/ペーストともにプレーンテキストのみ扱う QTextEdit。
+
+    - Ctrl+C や右クリックコピーでも、クリップボードには text/plain のみを入れる。
+    - 他アプリからの貼り付け時も装飾付きの HTML を無視し、テキストだけを挿入する。
+    """
+
+    def createMimeDataFromSelection(self) -> QMimeData:  # type: ignore[override]
+        cursor = self.textCursor()
+        text = cursor.selectedText()
+        # 行区切り用の U+2029 を通常の改行に置き換え
+        text = text.replace("\u2029", "\n")
+        mime = QMimeData()
+        mime.setText(text)
+        return mime
+
+    def insertFromMimeData(self, source: QMimeData) -> None:  # type: ignore[override]
+        """ペースト時に書式を捨ててプレーンテキストだけを挿入する。"""
+        if source is None:
+            return super().insertFromMimeData(source)
+
+        text = source.text()
+        if not text:
+            # プレーンテキストが無い場合は通常の処理にフォールバック
+            return super().insertFromMimeData(source)
+
+        # 改行コードや U+2029 を統一
+        text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\u2029", "\n")
+        cursor = self.textCursor()
+        cursor.insertText(text)
 
 
 def _resource_base_dir() -> str:
@@ -81,6 +114,11 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
+
+        # OS側のダークモード等に引きずられない、固定のライトテーマパレットを適用
+        # （Qtの自動テーマ追従を避けるため、ここで明示的にスタイルとパレットを固定する）
+        self._setup_palette()
+
         self.setWindowTitle("VRChatイベントカレンダー入力支援ツール")
         self.resize(1200, 1000)
 
@@ -130,6 +168,7 @@ class MainWindow(QMainWindow):
             }
             QLineEdit, QTextEdit, QComboBox {
                 background: #ffffff;
+                color: #111827;  /* OSのダークモードでも文字色が白にならないよう固定 */
                 border: 1px solid #bfdbfe;
                 border-radius: 6px;
                 padding: 4px 6px;
@@ -151,11 +190,13 @@ class MainWindow(QMainWindow):
                 background-color: #93c5fd;
             }
             QCheckBox {
+                color: #1e293b;
                 spacing: 6px;
             }
             QProgressBar {
                 border: 1px solid #bfdbfe;
                 border-radius: 6px;
+                color: #1e293b;
                 text-align: center;
             }
             QProgressBar::chunk {
@@ -196,6 +237,37 @@ class MainWindow(QMainWindow):
         tabs.addTab(self._create_execute_tab(), "実行 / ログ")
         tabs.addTab(self._create_extras_tab(), "おまけ")
         main_layout.addWidget(tabs)
+
+    def _setup_palette(self) -> None:
+        """アプリ全体のパレット/スタイルを固定し、OSのダークモードに影響されないようにする。"""
+
+        app = QApplication.instance()
+        if app is None:
+            return
+
+        # OS依存のスタイルではなく、Qt標準の Fusion スタイルに固定
+        app.setStyle("Fusion")
+
+        palette = QPalette()
+
+        # ウィンドウ/背景色
+        palette.setColor(QPalette.Window, QColor("#e0f2ff"))
+        palette.setColor(QPalette.Base, QColor("#ffffff"))
+        palette.setColor(QPalette.AlternateBase, QColor("#f8fbff"))
+
+        # 文字色
+        palette.setColor(QPalette.WindowText, QColor("#1e293b"))
+        palette.setColor(QPalette.Text, QColor("#111827"))
+        palette.setColor(QPalette.ButtonText, QColor("#ffffff"))
+        palette.setColor(QPalette.ToolTipBase, QColor("#111827"))
+        palette.setColor(QPalette.ToolTipText, QColor("#f9fafb"))
+
+        # ボタン/強調色
+        palette.setColor(QPalette.Button, QColor("#3b82f6"))
+        palette.setColor(QPalette.Highlight, QColor("#60a5fa"))
+        palette.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+
+        app.setPalette(palette)
 
     # -----------------
     # ヘッダー / アイコン
@@ -284,6 +356,7 @@ class MainWindow(QMainWindow):
         scroll = QScrollArea(tab)
         scroll.setWidgetResizable(True)
         form_container = QWidget(scroll)
+        form_container.setStyleSheet("background-color: #ffffff;")
         scroll.setWidget(form_container)
         form_layout = QVBoxLayout(form_container)
 
@@ -399,7 +472,7 @@ class MainWindow(QMainWindow):
         def add_text_edit(key: str, label_text: str) -> None:
             box = QGroupBox(label_text, detail_group)
             v = QVBoxLayout(box)
-            edit = QTextEdit(box)
+            edit = PlainCopyTextEdit(box)
 
             # 補足欄のみ高さを1行分程度にする
             if key == "remarks":
@@ -453,7 +526,7 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(self._autofill_button)
         layout.addLayout(btn_layout)
 
-        self._log_edit = QTextEdit(tab)
+        self._log_edit = PlainCopyTextEdit(tab)
         self._log_edit.setReadOnly(True)
         layout.addWidget(self._log_edit)
 
@@ -523,7 +596,7 @@ class MainWindow(QMainWindow):
             left_col = QVBoxLayout()
             right_col = QVBoxLayout()
 
-            body_edit = QTextEdit(block)
+            body_edit = PlainCopyTextEdit(block)
             body_edit.setFixedHeight(80)
             left_col.addWidget(QLabel("本文テンプレート", block))
             left_col.addWidget(body_edit)
@@ -542,7 +615,7 @@ class MainWindow(QMainWindow):
             btn_row.addStretch(1)
             left_col.addLayout(btn_row)
 
-            output_edit = QTextEdit(block)
+            output_edit = PlainCopyTextEdit(block)
             output_edit.setFixedHeight(80)
             output_edit.setReadOnly(True)
             right_col.addWidget(QLabel("出力テキスト", block))
@@ -577,7 +650,7 @@ class MainWindow(QMainWindow):
             b_layout.addWidget(notes_label)
 
             # 補足テキスト本体はラベルのすぐ下に配置
-            notes_edit = QTextEdit(block)
+            notes_edit = PlainCopyTextEdit(block)
             notes_edit.setFixedHeight(40)
             b_layout.addWidget(notes_edit)
 
