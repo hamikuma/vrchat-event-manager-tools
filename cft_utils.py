@@ -1,6 +1,8 @@
 import json
 import os
+import shutil
 import sys
+import tempfile
 import zipfile
 from urllib.request import urlopen
 from shutil import copyfileobj
@@ -13,6 +15,7 @@ from form_utils import log_success, log_failure
 CFT_METADATA_URL = "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json"
 CFT_PLATFORM = "win64"
 DEFAULT_CFT_TIMEOUT = 300.0  # seconds
+DEFAULT_CFT_DOWNLOAD_RETRIES = 3
 
 
 def _base_dir() -> str:
@@ -75,18 +78,37 @@ def terminate_cft_processes() -> None:
         log_failure(f"Chrome for Testing のプロセス終了に失敗しました: {e}")
 
 
-def _download_file(url: str, dest_path: str, timeout: float = DEFAULT_CFT_TIMEOUT) -> None:
+def _download_file(
+    url: str,
+    dest_path: str,
+    timeout: float = DEFAULT_CFT_TIMEOUT,
+    retries: int = DEFAULT_CFT_DOWNLOAD_RETRIES,
+) -> None:
     os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-    log_success(f"Chrome for Testing をダウンロード中: {url}")
-    try:
-        # タイムアウトを明示しておかないと、ネットワーク不調時に
-        # ダウンロード処理が無限に待ち続ける可能性があるため、
-        # デフォルトで数分（DEFAULT_CFT_TIMEOUT）待つようにしています。
-        with urlopen(url, timeout=timeout) as resp, open(dest_path, "wb") as out_f:
-            copyfileobj(resp, out_f)
-    except Exception as e:  # noqa: BLE001
-        log_failure(f"Chrome for Testing のダウンロードに失敗しました: {e}")
-        raise
+    last_exception = None
+
+    for attempt in range(1, retries + 1):
+        log_success(f"Chrome for Testing をダウンロード中 ({attempt}/{retries}): {url}")
+        try:
+            # タイムアウトを明示しておかないと、ネットワーク不調時に
+            # ダウンロード処理が無限に待ち続ける可能性があるため、
+            # デフォルトで数分（DEFAULT_CFT_TIMEOUT）待つようにしています。
+            with urlopen(url, timeout=timeout) as resp, open(dest_path, "wb") as out_f:
+                copyfileobj(resp, out_f)
+            return
+        except Exception as e:  # noqa: BLE001
+            last_exception = e
+            try:
+                os.remove(dest_path)
+            except OSError:
+                pass
+            if attempt < retries:
+                log_failure(f"Chrome for Testing のダウンロードに失敗したため再試行します: {e}")
+            else:
+                log_failure(f"Chrome for Testing のダウンロードに失敗しました: {e}")
+
+    if last_exception is not None:
+        raise last_exception
 
 
 def _extract_zip(zip_path: str, dest_dir: str) -> None:
@@ -96,6 +118,51 @@ def _extract_zip(zip_path: str, dest_dir: str) -> None:
     except Exception as e:  # noqa: BLE001
         log_failure(f"Chrome for Testing の展開に失敗しました: {e}")
         raise
+
+
+def _download_and_install_archive(
+    url: str,
+    zip_filename: str,
+    extracted_dirname: str,
+    expected_binary: str,
+) -> None:
+    root = _cft_root()
+    final_dir = os.path.join(root, extracted_dirname)
+    archive_path = os.path.join(root, zip_filename)
+    partial_archive_path = archive_path + ".part"
+    temp_extract_root = tempfile.mkdtemp(prefix=extracted_dirname + "-", dir=root)
+
+    try:
+        for leftover in (archive_path, partial_archive_path):
+            try:
+                os.remove(leftover)
+            except OSError:
+                pass
+
+        _download_file(url, partial_archive_path)
+        os.replace(partial_archive_path, archive_path)
+        _extract_zip(archive_path, temp_extract_root)
+
+        extracted_dir = os.path.join(temp_extract_root, extracted_dirname)
+        expected_path = os.path.join(extracted_dir, expected_binary)
+        if not os.path.exists(expected_path):
+            raise RuntimeError(
+                f"{extracted_dirname} の展開結果に必要なファイルが見つかりませんでした: {expected_binary}"
+            )
+
+        if os.path.exists(final_dir):
+            shutil.rmtree(final_dir)
+        os.replace(extracted_dir, final_dir)
+    finally:
+        try:
+            os.remove(archive_path)
+        except OSError:
+            pass
+        try:
+            os.remove(partial_archive_path)
+        except OSError:
+            pass
+        shutil.rmtree(temp_extract_root, ignore_errors=True)
 
 
 def _ensure_cft_downloaded() -> tuple[str, str]:
@@ -137,21 +204,18 @@ def _ensure_cft_downloaded() -> tuple[str, str]:
         log_failure(f"Chrome for Testing のダウンロード URL 解決に失敗しました: {e}")
         raise
 
-    chrome_zip = os.path.join(root, "chrome-win64.zip")
-    driver_zip = os.path.join(root, "chromedriver-win64.zip")
-
-    _download_file(chrome_url, chrome_zip)
-    _download_file(driver_url, driver_zip)
-
-    _extract_zip(chrome_zip, root)
-    _extract_zip(driver_zip, root)
-
-    # ZIP は削除しておく（任意）
-    try:
-        os.remove(chrome_zip)
-        os.remove(driver_zip)
-    except OSError:
-        pass
+    _download_and_install_archive(
+        chrome_url,
+        "chrome-win64.zip",
+        "chrome-win64",
+        "chrome.exe",
+    )
+    _download_and_install_archive(
+        driver_url,
+        "chromedriver-win64.zip",
+        "chromedriver-win64",
+        "chromedriver.exe",
+    )
 
     if not (os.path.exists(chrome_exe) and os.path.exists(driver_exe)):
         raise RuntimeError("Chrome for Testing の実行ファイルが正しく展開されませんでした")

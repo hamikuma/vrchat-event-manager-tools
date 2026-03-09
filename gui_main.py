@@ -1,14 +1,20 @@
+from __future__ import annotations
+
 import json
 import os
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 import form_utils
+
+if TYPE_CHECKING:
+    from gui_design import MainWindow
 
 
 # -------------
@@ -200,8 +206,28 @@ class ConfigManager(QObject):
         if path is not None:
             self.config_path = path
         data = self._config.to_dict()
-        with open(self._config_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        config_dir = os.path.dirname(os.path.abspath(self._config_path))
+        if config_dir:
+            os.makedirs(config_dir, exist_ok=True)
+
+        fd, temp_path = tempfile.mkstemp(
+            prefix="config-",
+            suffix=".json.tmp",
+            dir=config_dir or None,
+            text=True,
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, self._config_path)
+        except Exception:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+            raise
 
     # GUI 側から dict でもらった値で上書きする想定
     def update_from_dict(self, values: Dict[str, Any]) -> None:
@@ -348,6 +374,7 @@ class RunnerThread(QThread):
         self.logMessage.emit(message)
 
     def run(self) -> None:
+        previous_config_path = os.environ.get("VRC_EVENT_CONFIG_PATH")
         os.environ["VRC_EVENT_CONFIG_PATH"] = self._config_path
         form_utils.set_log_handler(self._log_handler)
 
@@ -381,6 +408,10 @@ class RunnerThread(QThread):
             self.finishedWithStatus.emit("error")
         finally:
             form_utils.set_log_handler(None)
+            if previous_config_path is None:
+                os.environ.pop("VRC_EVENT_CONFIG_PATH", None)
+            else:
+                os.environ["VRC_EVENT_CONFIG_PATH"] = previous_config_path
 
 
 # -----------------
@@ -389,7 +420,7 @@ class RunnerThread(QThread):
 
 
 class AppController(QObject):
-    def __init__(self, window: "MainWindow", parent: Optional[QObject] = None) -> None:
+    def __init__(self, window: MainWindow, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self.window = window
         self.config_manager = ConfigManager(self)
@@ -448,6 +479,10 @@ class AppController(QObject):
 
     def _show_info(self, message: str) -> None:
         QMessageBox.information(self.window, "情報", message)
+
+    def _clear_runner_thread(self, thread: RunnerThread) -> None:
+        if self.runner_thread is thread:
+            self.runner_thread = None
 
     # ---------- Config 操作 ----------
 
@@ -514,9 +549,12 @@ class AppController(QObject):
             self._show_error(f"設定ファイルの保存に失敗しました: {e}")
             return
 
-        self.runner_thread = RunnerThread(mode, self.config_manager.config_path, self)
-        self.runner_thread.logMessage.connect(self.window.append_log_message)
-        self.runner_thread.finishedWithStatus.connect(self.on_runner_finished)
+        thread = RunnerThread(mode, self.config_manager.config_path, self)
+        thread.logMessage.connect(self.window.append_log_message)
+        thread.finishedWithStatus.connect(self.on_runner_finished)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(lambda: self._clear_runner_thread(thread))
+        self.runner_thread = thread
 
         if mode == "create_profile":
             self.window.set_status("プロファイル作成中...")
@@ -524,7 +562,7 @@ class AppController(QObject):
             self.window.set_status("自動入力実行中...")
         self.window.set_running(True)
 
-        self.runner_thread.start()
+        thread.start()
 
     @Slot(dict)
     def on_create_profile_requested(self, values: Dict[str, Any]) -> None:

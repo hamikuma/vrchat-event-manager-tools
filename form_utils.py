@@ -4,6 +4,7 @@ import time
 from datetime import datetime, timedelta
 
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
@@ -152,13 +153,78 @@ def ensure_reply_email_checkbox_on(driver, wait):
         log_failure(f"メールアドレスのチェックONに失敗しました: {e}")
 
 
+def _xpath_literal(value):
+    """XPath 文字列リテラルとして安全に埋め込める形へ変換する。"""
+    if "'" not in value:
+        return f"'{value}'"
+    if '"' not in value:
+        return f'"{value}"'
+
+    parts = value.split("'")
+    return "concat(" + ", \"'\", ".join(f"'{part}'" for part in parts) + ")"
+
+
+def _find_question_container_by_label(driver, wait, label_text, timeout=10):
+    """表示中のラベル文字列から、対応する質問コンテナを返す。"""
+    label_literal = _xpath_literal(label_text)
+    label_xpath = f"//span[contains(normalize-space(.), {label_literal})]"
+
+    def _locate_visible_container(_driver):
+        for label_elem in _driver.find_elements(By.XPATH, label_xpath):
+            if not label_elem.is_displayed():
+                continue
+
+            containers = label_elem.find_elements(By.XPATH, "./ancestor::div[contains(@class, 'Qr7Oae')]")
+            for container in containers:
+                if container.is_displayed():
+                    return container
+        return False
+
+    return WebDriverWait(driver, timeout).until(_locate_visible_container)
+
+
+def _is_interactable_text_field(elem):
+    """表示中かつ編集可能な input / textarea を判定する。"""
+    if not elem.is_displayed() or not elem.is_enabled():
+        return False
+    if elem.get_attribute("readonly"):
+        return False
+    if elem.get_attribute("aria-hidden") == "true":
+        return False
+    return True
+
+
+def _find_interactable_text_field(container):
+    """質問コンテナ内の短文入力欄を返す。"""
+    candidates = container.find_elements(
+        By.XPATH,
+        ".//input[not(@type) or @type='text' or @type='email' or @type='url' or @type='tel'] | .//textarea",
+    )
+
+    for elem in candidates:
+        if _is_interactable_text_field(elem):
+            return elem
+
+    raise RuntimeError("表示中かつ操作可能な入力欄が見つかりませんでした")
+
+
+def _replace_field_value(driver, elem, value):
+    """Googleフォームの入力欄を確実に置き換える。"""
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
+    wait = WebDriverWait(driver, 5)
+    wait.until(lambda _driver: elem.is_displayed() and elem.is_enabled())
+    elem.click()
+    time.sleep(0.1)
+    elem.send_keys(Keys.CONTROL, "a")
+    elem.send_keys(Keys.DELETE)
+    elem.send_keys(value)
+
+
 def fill_input_by_label(driver, wait, label_text, value):
     try:
-        input_elem = wait.until(EC.presence_of_element_located((
-            By.XPATH, f"//span[contains(text(), '{label_text}')]/ancestor::div[contains(@class, 'HoXoMd')]/following::input[@type='text'][1]"
-        )))
-        input_elem.clear()
-        input_elem.send_keys(value)
+        container = _find_question_container_by_label(driver, wait, label_text)
+        input_elem = _find_interactable_text_field(container)
+        _replace_field_value(driver, input_elem, value)
         log_success(f"「{label_text}」に入力が完了しました")
     except Exception as e:
         log_failure(f"「{label_text}」の入力に失敗しました: {e}")
@@ -170,11 +236,9 @@ def fill_input_by_label_with_retry(driver, wait, label_text, value, max_retries=
 
 def fill_textarea_by_label(driver, wait, label_text, value):
     try:
-        textarea_elem = wait.until(EC.presence_of_element_located((
-            By.XPATH, f"//span[contains(text(), '{label_text}')]/ancestor::div[contains(@class, 'HoXoMd')]/following::textarea[1]"
-        )))
-        textarea_elem.clear()
-        textarea_elem.send_keys(value)
+        container = _find_question_container_by_label(driver, wait, label_text)
+        textarea_elem = _find_interactable_text_field(container)
+        _replace_field_value(driver, textarea_elem, value)
         log_success(f"「{label_text}」のテキストエリアに入力が完了しました")
     except Exception as e:
         log_failure(f"「{label_text}」のテキストエリア入力に失敗しました: {e}")
@@ -337,9 +401,7 @@ def select_radio_by_label_with_retry(driver, wait, label_text, option_text, max_
 
 def wait_for_label(driver, label_text, timeout=10):
     try:
-        WebDriverWait(driver, timeout).until(
-            EC.presence_of_element_located((By.XPATH, f"//span[contains(text(), '{label_text}')]"))
-        )
+        _find_question_container_by_label(driver, WebDriverWait(driver, timeout), label_text, timeout=timeout)
         log_success(f"「{label_text}」が表示されました（ページ遷移完了）")
     except Exception as e:
         log_failure(f"「{label_text}」の表示待ちに失敗: {e}")
