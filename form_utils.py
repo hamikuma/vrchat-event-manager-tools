@@ -220,6 +220,38 @@ def _replace_field_value(driver, elem, value):
     elem.send_keys(value)
 
 
+def _wait_for_loading_overlay_to_clear(driver, timeout=1.0):
+    """Googleフォーム上の一時的なオーバーレイが消えるまで待つ。"""
+    try:
+        WebDriverWait(driver, timeout).until(
+            EC.invisibility_of_element_located((By.CLASS_NAME, "ThHDze"))
+        )
+    except Exception:
+        pass
+
+
+def _find_displayed_element(container, xpath):
+    """コンテナ内で表示中の要素を 1 つ返す。"""
+    for elem in container.find_elements(By.XPATH, xpath):
+        if elem.is_displayed():
+            return elem
+    raise RuntimeError("表示中の要素が見つかりませんでした")
+
+
+def _click_with_wait(driver, elem, timeout=1.0):
+    """表示中・有効状態を待ってからクリックする。"""
+    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", elem)
+    _wait_for_loading_overlay_to_clear(driver, timeout=timeout)
+    WebDriverWait(driver, timeout).until(
+        lambda _driver: elem.is_displayed() and elem.is_enabled()
+    )
+
+    try:
+        elem.click()
+    except Exception:
+        driver.execute_script("arguments[0].click();", elem)
+
+
 def fill_input_by_label(driver, wait, label_text, value):
     try:
         container = _find_question_container_by_label(driver, wait, label_text)
@@ -250,21 +282,36 @@ def fill_textarea_by_label_with_retry(driver, wait, label_text, value, max_retri
 
 def select_option_by_label(driver, wait, label_text, option_text):
     try:
-        label_elem = wait.until(EC.presence_of_element_located((
-            By.XPATH, f"//span[contains(text(), '{label_text}')]"
-        )))
-        container = label_elem.find_element(By.XPATH, "./ancestor::div[contains(@class, 'Qr7Oae')]")
-        dropdown = container.find_element(By.XPATH, ".//div[@role='listbox']")
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", dropdown)
-        time.sleep(0.5)
-        dropdown.click()
-        time.sleep(1)
-        option_elem = wait.until(EC.element_to_be_clickable((
-            By.XPATH, f"//div[@role='option'][.//span[contains(text(), '{option_text}')]]"
-        )))
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", option_elem)
-        option_elem.click()
-        time.sleep(0.5)
+        option_literal = _xpath_literal(option_text)
+        container = _find_question_container_by_label(driver, wait, label_text)
+        dropdown = _find_displayed_element(container, ".//div[@role='listbox']")
+
+        if option_text in (dropdown.text or ""):
+            log_success(f"「{label_text}」の「{option_text}」は既に選択されています")
+            return
+
+        _click_with_wait(driver, dropdown)
+
+        option_xpath = (
+            f"//div[@role='option' and .//span[normalize-space(.)={option_literal}]]"
+        )
+
+        def _find_displayed_option(_driver):
+            for elem in _driver.find_elements(By.XPATH, option_xpath):
+                if elem.is_displayed() and elem.is_enabled():
+                    return elem
+            return False
+
+        option_elem = WebDriverWait(driver, 2).until(_find_displayed_option)
+        _click_with_wait(driver, option_elem)
+
+        try:
+            WebDriverWait(driver, 1).until(
+                lambda _driver: option_text in (dropdown.text or "")
+            )
+        except Exception:
+            pass
+
         log_success(f"「{label_text}」に「{option_text}」を選択しました")
     except Exception as e:
         log_failure(f"「{label_text}」の選択に失敗しました: {e}")
