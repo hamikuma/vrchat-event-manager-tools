@@ -131,7 +131,6 @@ GUI には主に次のタブがあります。
 | `participation_conditions` | 参加条件 | 任意 |
 | `participation_method` | 参加方法 | 任意 |
 | `remarks` | 備考 | 任意 |
-| `x_announcement` | X 告知文 | 任意 |
 
 追加機能用のキー:
 

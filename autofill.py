@@ -238,13 +238,6 @@ def _run_impl(config, retry_count: int = 0) -> None:
             config.get("remarks", ""),
         )
 
-        fill_textarea_by_label_with_retry(
-            driver,
-            wait,
-            "X告知文",
-            config.get("x_announcement", ""),
-        )
-
         log_success("自動入力完了。スクリプトを終了します（ブラウザはそのまま）。")
         sys.exit(0)
     except Exception as e:

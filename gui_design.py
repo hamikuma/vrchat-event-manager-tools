@@ -489,7 +489,6 @@ class MainWindow(QMainWindow):
         add_text_edit("participation_conditions", "参加条件")
         add_text_edit("participation_method", "参加方法")
         add_text_edit("remarks", "補足")
-        add_text_edit("x_announcement", "X 告知文")
 
         # チェックボックス
         email_cb = QCheckBox("メールアドレスを返信表示に記録 (常にON)", detail_group)
@@ -783,7 +782,6 @@ class MainWindow(QMainWindow):
         data["participation_conditions"] = get_text("participation_conditions")
         data["participation_method"] = get_text("participation_method")
         data["remarks"] = get_text("remarks")
-        data["x_announcement"] = get_text("x_announcement")
 
         email_cb = self._form_widgets.get("record_the_email_address_to_reply")
         if isinstance(email_cb, QCheckBox):
@@ -893,7 +891,6 @@ class MainWindow(QMainWindow):
             "participation_method", values.get("participation_method", "")
         )
         set_text("remarks", values.get("remarks", ""))
-        set_text("x_announcement", values.get("x_announcement", ""))
 
         email_cb = self._form_widgets.get("record_the_email_address_to_reply")
         if isinstance(email_cb, QCheckBox):
