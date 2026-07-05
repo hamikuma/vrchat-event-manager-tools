@@ -238,34 +238,6 @@ def _run_impl(config, retry_count: int = 0) -> None:
             config.get("remarks", ""),
         )
 
-        # 海外向け告知:
-        #   - チェック ON のとき: 「希望する」を選択
-        #   - チェック OFF のとき: 初期値「選択」に戻す
-        overseas_on = bool(config.get("overseas_announcement"))
-        overseas_value = "希望する" if overseas_on else "選択"
-
-        try:
-            # まずプルダウン形式を試す
-            select_option_by_label_with_retry(
-                driver,
-                wait,
-                "海外ユーザー向け告知",
-                overseas_value,
-            )
-        except Exception:
-            # 失敗した場合はラジオボタン形式を試す
-            try:
-                select_radio_by_label_with_retry(
-                    driver,
-                    wait,
-                    "海外ユーザー向け告知",
-                    overseas_value,
-                )
-            except Exception:
-                # ここで例外を握りつぶすと後続処理に進めるが、
-                # 詳細なログは form_utils 側で既に出力されている
-                pass
-
         fill_textarea_by_label_with_retry(
             driver,
             wait,

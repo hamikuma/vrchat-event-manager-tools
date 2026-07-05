@@ -492,10 +492,6 @@ class MainWindow(QMainWindow):
         add_text_edit("x_announcement", "X 告知文")
 
         # チェックボックス
-        overseas_cb = QCheckBox("海外向け告知を行う", detail_group)
-        self._form_widgets["overseas_announcement"] = overseas_cb
-        detail_layout.addWidget(overseas_cb)
-
         email_cb = QCheckBox("メールアドレスを返信表示に記録 (常にON)", detail_group)
         email_cb.setChecked(True)
         email_cb.setEnabled(False)
@@ -789,11 +785,6 @@ class MainWindow(QMainWindow):
         data["remarks"] = get_text("remarks")
         data["x_announcement"] = get_text("x_announcement")
 
-        # チェックボックス系
-        overseas_cb = self._form_widgets.get("overseas_announcement")
-        if isinstance(overseas_cb, QCheckBox):
-            data["overseas_announcement"] = overseas_cb.isChecked()
-
         email_cb = self._form_widgets.get("record_the_email_address_to_reply")
         if isinstance(email_cb, QCheckBox):
             data["record_the_email_address_to_reply"] = email_cb.isChecked()
@@ -903,10 +894,6 @@ class MainWindow(QMainWindow):
         )
         set_text("remarks", values.get("remarks", ""))
         set_text("x_announcement", values.get("x_announcement", ""))
-
-        overseas_cb = self._form_widgets.get("overseas_announcement")
-        if isinstance(overseas_cb, QCheckBox):
-            overseas_cb.setChecked(bool(values.get("overseas_announcement", False)))
 
         email_cb = self._form_widgets.get("record_the_email_address_to_reply")
         if isinstance(email_cb, QCheckBox):

@@ -76,7 +76,6 @@ class AppConfig:
     participation_method: str = ""
     remarks: str = ""
     x_announcement: str = ""
-    overseas_announcement: bool = False
     extras: Extras = field(default_factory=Extras)
 
     @classmethod
@@ -126,7 +125,6 @@ class AppConfig:
             participation_method=data.get("participation_method", ""),
             remarks=data.get("remarks", ""),
             x_announcement=data.get("x_announcement", ""),
-            overseas_announcement=bool(data.get("overseas_announcement", False)),
             extras=extras,
         )
 
@@ -149,7 +147,6 @@ class AppConfig:
             "participation_method": self.participation_method,
             "remarks": self.remarks,
             "x_announcement": self.x_announcement,
-            "overseas_announcement": self.overseas_announcement,
             "extras": {
                 "variables": {
                     "A": self.extras.variables.A,
@@ -250,7 +247,6 @@ class ConfigManager(QObject):
             "participation_method",
             "remarks",
             "x_announcement",
-            "overseas_announcement",
         ):
             if key in values:
                 setattr(cfg, key, values[key])
